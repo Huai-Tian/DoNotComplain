@@ -80,31 +80,49 @@
 - **RL-10** 三个元数据文件路径**必须**是 `app/src/main/resources/META-INF/xposed/{java_init.list, module.prop, scope.list}`。框架以 `META-INF/xposed/java_init.list` 是否存在来判定"现代模块"。
   `[移到 META-INF/ 根下 = 框架不识别 = 模块在 LSPosed 里根本不出现（本项目真实踩过的坑，commit 1895d84 → bafab4e）]`
 
-- **RL-11** 依赖方式不可对调：`io.github.libxposed:api` / `:annotation` 必须 `compileOnly`，`io.github.libxposed:service` 必须 `implementation`。
-  `[api 打进 APK = 模块自带一份可能与框架冲突的 API 实现；service 用 compileOnly = 模块自身进程运行时 ClassNotFound]`
+- **RL-11** （历史条目，UI 移除后收敛为 RL-18）依赖方式：api 必须 `compileOnly`；service 曾以 `implementation` 服务 UI 进程，现已无需。
+  `[api 打进 APK = 模块自带一份可能与框架冲突的 API 实现]`
 
 - **RL-12** `AndroidManifest.xml` **不手动声明** `XposedProvider`——service AAR 自带声明（authority `${applicationId}.XposedService`，exported=true），manifest 合并自动注入。手动声明会因 exported 值冲突导致构建失败（真实构建判例）。
 
-- **RL-13** `keepRules/rules.keep` 中入口类的 keep 规则（`-keep class dont.complain.DoNotComplainEntry { *; }`）**不可移除**。
-  `[R8 混淆后框架按 java_init.list 里的原名加载类 = ClassNotFound = 模块失效]`
+- **RL-13** keep 规则采用 DFS 式写法：`-keep,allowobfuscation ... public class * extends io.github.libxposed.api.XposedModule { public <init>(...); }` + `-adaptresourcefilecontents META-INF/xposed/java_init.list`。**两者必须成对**：入口允许混淆的前提是 java_init.list 内容随混淆名自动改写。若只保留 allowobfuscation 而丢了 adapt 行 = 框架按旧类名加载 = ClassNotFound。
+  `[实测：release 中入口混淆为 Lh;，java_init.list 内容同步变为 h——配对生效]`
 
 ### D. 作用域与生命周期纪律
 
 - **RL-14** `scope.list` 内容固定为 `system`，`module.prop` 的 `staticScope=true` **不可改动**。
   `[改成 false 或添加应用包名 = 违背"仅 system_server 注入"的架构承诺，模块开始进入应用进程]`
 
-- **RL-15** 不实现热重载（`autoHotReload` 不设、不写 `onHotReloading`/`onHotReloaded`）。这是 v1 的明确决策：system_server 里做类加载器替换的风险收益比完全倒挂，且总开关已覆盖应急回滚场景。将来若启用，须按 README 中的存档清单实施（ClassLoader 经 savedInstanceState 传递是唯一的坑点）。
+- **RL-15** 热重载按 DisableFlagSecure 模式实现（`autoHotReload=true`），**实现方式不可偏离三要素**：
+  1. 所有 hook 经 `hookSafely` 以 `method.toGenericString()` 为 id 注册（同 id 重装 = 原子替换）；
+  2. `onHotReloading` 把 system_server 的 `ClassLoader` 存入 saved state（宿主对象，非模块类加载器产物——唯一可安全跨代传递的载体）并返回 true；
+  3. `onHotReloaded` 用取回的 ClassLoader 重装 hook，再卸载 `oldHookHandles` 中 id 不在新 `hookedIds` 集合里的 hook。
+     `[缺任何一环：要么 hook 双份叠加（无 id 替换），要么新代码拿到失效 ClassLoader 抛异常，要么旧 hook 残留指向已卸载的旧代类——都是重启循环级风险。v1 曾裁决"不做热重载"，DFS 的生产实现证明该模式可行，据此反转]`
 
 - **RL-16** 入口类只在 `onSystemServerStarting` 安装 hook，**不实现** `onPackageLoaded` / `onPackageReady`（system 作用域下不会被有意义地回调），**不调用** `detach()`。
   `[在 system_server 里 detach() = 主动放弃后续生命周期 = 行为未定义]`
 
-### E. 配置契约纪律
+### E. 无 UI 纪律
 
-- **RL-17** RemotePreferences 的 group 名（`Config.PREFS_GROUP = "config"`）与 key（`KEY_ENABLED = "enabled"`）是**双进程共享契约**——hook 侧只读，UI 侧写。改动必须两侧同步。
-  `[只改一侧 = 开关静默失效（hook 侧读不到新 key，回落默认值 true）]`
+- **RL-17** 模块**不含任何 Activity / UI / 配置 / RemotePreferences**（对齐 DisableFlagSecure 的 release 形态）。LSPosed 的启用开关是唯一开关：启用 = 欺骗全部应用的自身查询，禁用 = 恢复全部真实结果。不要"顺手"加回设置界面、按应用开关或 service 依赖——那会重新引入 UI 进程、XposedProvider、Compose 工具链（RL-19 曾因 Compose 引发一次真机崩溃）与 APK 体积膨胀（60 KB → 12 MB）。
+  `[加回 UI = 重新引入整套 Compose 工具链版本耦合与 release-only 崩溃面；"启用即全局生效"就是本模块的全部产品语义]`
 
-- **RL-18** hook 侧 `enabled()` 的回落语义：`prefs == null`（RemotePreferences 不可用，框架无 remote 能力）时**返回 true（模块生效）**。这是刻意的可用性优先决策，不要"修复"为 false。
-  `[改回 false = 无 remote 能力的框架上模块永久关闭，且用户无从得知原因]`
+- **RL-18** 依赖清单只能是 `compileOnly(libs.libxposed.api)`。`service` 构件仅服务于模块自身 UI 进程（本项目已无 UI）；`annotation` 构件未被代码引用。
+  `[多一个打包依赖 = 多一个与框架运行时冲突的候选；api 打进 APK 会与框架自带实现冲突]`
+
+### F. 工具链版本纪律
+
+- **RL-19** **历史教训（本项目已无 Compose，规则存档备查）**：AGP 9 上 `kotlin-compose` 插件会把自己的 KGP 带上 classpath（Gradle 取最高版本），因此 toml 的 `kotlin` 条目决定实际编译器版本；真正的兼容约束在 Compose 编译器 ↔ 运行时（composeBom）之间——**kotlin 与 composeBom 必须一起升降，BOM 不得早于该 Kotlin 发布期**。
+  AGP 9 的实际工具链机制（曾两度误诊，以 ScreenshotFaker 实测为准）：
+  1. AGP 9 禁止应用 KGP（`org.jetbrains.kotlin.android` 会被直接拒绝），Kotlin 编译走 built-in 路径，AGP POM 内嵌 KGP 2.2.10——**但这不是有效版本**；
+  2. `kotlin-compose` 插件（marker → `compose-compiler-gradle-plugin`）对自己的 KGP 是 **compile 依赖**，会被带上 build classpath，Gradle 冲突解析**取最高版本**——因此 toml 的 `kotlin` 条目实际决定了整个编译工具链（2.4.20 条目 = Kotlin 2.4.20 + Compose 编译器 2.4.20）。这就是 AGP 9 上能用 2.4.x 的原因，也是 `KotlinVersion.KOTLIN_2_4` 能编译通过的原因；
+  3. **真正的兼容约束在 Compose 编译器 ↔ Compose 运行时（BOM）之间**：编译器生成的代码要求运行时不低于其最低支持版本。运行时**新于**编译器 = 安全；**旧于** = 构建全绿，运行时首个 Composable 组合即崩溃（NoSuchMethodError 族）= "模块 UI 打不开"。
+     `[本项目真实事故：kotlin 2.4.20 + composeBom 2026.02.01（2 月运行时撑不起 2.4.20 编译器的生成代码）→ UI 崩溃。对照：ScreenshotFaker 用 2.4.10 + 2026.08.00 正常运行]`
+     `[曾用 "锁 2.2.10 = AGP 内嵌版本" 修复——结论错误但碰巧有效：旧编译器 + 任何较新运行时 = 兼容方向。正确修复是 kotlin 2.4.20 + BOM 2026.09.00]`
+     升级规则：动 `kotlin` 时，把 `composeBom` 升到与该 Kotlin 版本同期或更新的 BOM（如 2.4.20 → 2026.09.00）；动 `composeBom` 时无此约束（运行时变新总是安全方向，但注意行为变更）。
+
+- **RL-20** release 构建的 `optimization {}` **不得设置 `packageScope` 覆盖 `androidx.**` / `kotlin.**` / `kotlinx.**`**。本项目曾用模板生成的 `packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")`，导致 debug 正常、release 点击即闪退（混淆 stdlib/androidx 是头号嫌疑）；对齐 ScreenshotFaker 的工作配置（`optimization { enable = true }`，无 packageScope）后移除。未上真机验证前，不要往 release 混淆配置里加任何"看起来更优化"的项。
+  `[packageScope 混淆依赖库 = release-only 运行时崩溃，构建零警告]`
 
 ---
 
@@ -112,19 +130,21 @@
 
 当你产生"这段该重构/修复"的冲动时，先查此表：
 
-| 直觉冲动                                         | 为什么是错的                                                      | 正确认知                                                                                         |
-|--------------------------------------------------|-------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|
-| "自查判定太保守，直接无条件返回 true 更简单"     | Settings/SystemUI 查询也走这些方法                                | uid 匹配是唯一能区分"应用自查"与"系统查询"的信号（RL-02）                                        |
-| "13+ 上 NMS 查询已 deprecated，hook 可以删"      | 客户端方法仍在、binder 仍在，旧应用/旧 SDK 构建的应用继续走这条路 | 13+ 是**叠加** PermissionManager hook，不是替换（SDK_INT >= 33 才追加）                          |
-| "AppOps 查调用栈太丑，性能也不好"                | uid 匹配拦不住 <13 投递路径的内部 checkOpNoThrow（同 uid）        | 栈检查是唯一判据；它在 hook 命中时才执行，非热路径（RL-03）                                      |
-| "getNotificationChannel 用精确签名反射更严谨"    | OEM 的参数表有漂移（4 参/5 参、有无 conversationId）              | 方法名 + 参数个数区间匹配 + 逐参数类型校验关键位（RL-06 同源）                                   |
-| "NMS 的 binder 方法直接在 NMS 类里找"            | binder 实现在 NMS 的内部类（如 `NotificationService`）里          | `collectSelfAndNested` 向下遍历两层嵌套类                                                        |
-| "AppOpsService 就是 android.app.AppOpsService"   | 该类迁移过三次包名                                                | 候选表探测：`com.android.server.appop.`(11+) / `android.app.`(9/10) / `com.android.server.`(8.x) |
-| "MANIFEST 里声明 Provider 更可控"                | AAR 自带声明且 exported=true，手动声明必冲突                      | 删除手动声明，靠 manifest merge（RL-12，真实构建判例）                                           |
-| "RemotePreferences 不可用时模块应该安全地不生效" | 用户装框架就是为了生效；不可用时关闭 = 静默失效                   | 回落 true（可用性优先，RL-18）                                                                   |
-| "uidPackages 缓存该有过期机制"                   | uid→包映射在开机周期内单调；过期机制需要系统回调                  | 只增不减（RL-09）                                                                                |
-| "总开关关掉后 hook 应该 unhook 而不是每次判断"   | unhook/rehook 引入生命周期竞态；enabled() 是一次 map 读取         | 保持每 hooker 内的 enabled() 检查（成本可忽略）                                                  |
-| "热重载能提升体验，加上吧"                       | system_server 里做类加载器替换，失败 = 重启循环                   | 明确不做（RL-15，v1 决策存档）                                                                   |
+| 直觉冲动                                           | 为什么是错的                                                                                                      | 正确认知                                                                                                          |
+|----------------------------------------------------|-------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------|
+| "自查判定太保守，直接无条件返回 true 更简单"       | Settings/SystemUI 查询也走这些方法                                                                                | uid 匹配是唯一能区分"应用自查"与"系统查询"的信号（RL-02）                                                         |
+| "13+ 上 NMS 查询已 deprecated，hook 可以删"        | 客户端方法仍在、binder 仍在，旧应用/旧 SDK 构建的应用继续走这条路                                                 | 13+ 是**叠加** PermissionManager hook，不是替换（SDK_INT >= 33 才追加）                                           |
+| "AppOps 查调用栈太丑，性能也不好"                  | uid 匹配拦不住 <13 投递路径的内部 checkOpNoThrow（同 uid）                                                        | 栈检查是唯一判据；它在 hook 命中时才执行，非热路径（RL-03）                                                       |
+| "getNotificationChannel 用精确签名反射更严谨"      | OEM 的参数表有漂移（4 参/5 参、有无 conversationId）                                                              | 方法名 + 参数个数区间匹配 + 逐参数类型校验关键位（RL-06 同源）                                                    |
+| "NMS 的 binder 方法直接在 NMS 类里找"              | binder 实现在 NMS 的内部类（如 `NotificationService`）里                                                          | `collectSelfAndNested` 向下遍历两层嵌套类                                                                         |
+| "AppOpsService 就是 android.app.AppOpsService"     | 该类迁移过三次包名                                                                                                | 候选表探测：`com.android.server.appop.`(11+) / `android.app.`(9/10) / `com.android.server.`(8.x)                  |
+| "MANIFEST 里声明 Provider 更可控"                  | AAR 自带声明且 exported=true，手动声明必冲突                                                                      | 删除手动声明，靠 manifest merge（RL-12，真实构建判例）                                                            |
+| "RemotePreferences 不可用时模块应该安全地不生效"   | （历史条目，UI 已移除）用户装框架就是为了生效                                                                     | 无配置设计：启用即生效（RL-17）                                                                                   |
+| "uidPackages 缓存该有过期机制"                     | uid→包映射在开机周期内单调；过期机制需要系统回调                                                                  | 只增不减（RL-09）                                                                                                 |
+| "应该有应用内开关 / 按应用控制"                    | 系统级裁决修饰器不是 per-app 定制器；LSPosed 启用开关已是天然开关                                                 | 无 UI 无配置（RL-17，对齐 DisableFlagSecure）                                                                     |
+| "热重载能提升体验，加上吧"                         | （已实现）但实现必须走 DFS 三要素，不能自创                                                                       | RL-15：id 注册 + ClassLoader 跨代传递 + 陈旧 hook 卸载                                                            |
+| "kotlin 版本升级 = 常规依赖升级，只动 kotlin 条目" | compose 编译器随 kotlin 走，但 Compose 运行时由 composeBom 决定；两者错位（编译器新、运行时旧）= 运行时崩溃       | kotlin 与 composeBom 成对升降，BOM 不早于 Kotlin 发布期（RL-19）                                                  |
+| "AGP 9 内嵌 Kotlin 2.2.10，所以只能用 2.2.10"      | compose 插件把自己的 KGP 带上 classpath（compile 依赖），Gradle 取最高版本——toml 的 kotlin 条目才是有效工具链版本 | 2.4.20 可用（ScreenshotFaker 同机制实测）；但**不要**因此尝试应用 `org.jetbrains.kotlin.android`（被 AGP 9 拒绝） |
 
 ---
 
@@ -134,49 +154,36 @@
 仓库根/
 ├── README.md / README_ZH.md        人类文档（英文/中文）
 ├── README_AGENT.md                 本文档
-├── app/
-│   ├── build.gradle.kts            依赖声明（RL-11 的落点）
-│   └── src/main/
-│       ├── AndroidManifest.xml     label/description + AAR 自动合并的 Provider
-│       ├── java/dont/complain/
-│       │   ├── DoNotComplainEntry.kt   XposedModule 入口（onSystemServerStarting）
-│       │   ├── Config.kt               双进程共享常量（RL-17 的落点）
-│       │   ├── MainActivity.kt         Compose UI + ModuleService（XposedServiceHelper 桥）
-│       │   └── hook/SystemHooker.kt    全部 hook 逻辑（本模块的核心，376 行）
-│       ├── keepRules/rules.keep    R8 keep 规则（RL-13）
-│       └── resources/META-INF/xposed/
-│           ├── java_init.list      入口类全限定名
-│           ├── module.prop         minApiVersion=102 / staticScope=true
-│           └── scope.list          system（RL-14）
+└── app/
+    ├── build.gradle.kts            唯一依赖 compileOnly(libxposed.api)（RL-11/18 的落点）
+    └── src/main/
+        ├── AndroidManifest.xml     裸 application（label/description，无任何组件）
+        ├── java/dont/complain/
+        │   ├── DoNotComplainEntry.kt   XposedModule 入口（onSystemServerStarting + 热重载）
+        │   └── hook/SystemHooker.kt    全部 hook 逻辑（本模块的核心）
+        ├── keepRules/rules.keep    DFS 式 keep + adaptresourcefilecontents（RL-13）
+        └── resources/META-INF/xposed/
+            ├── java_init.list      入口类全限定名（构建时随混淆名自动改写）
+            ├── module.prop         minApiVersion=102 / staticScope=true / autoHotReload=true
+            └── scope.list          system（RL-14）
 ```
 
 ---
 
-## 5. 双进程模型（建立心智模型）
+## 5. 单进程模型（建立心智模型）
 
-模块的代码在**两个完全隔离的进程**里运行，共享的只有 `dont.complain` 这个包名和 `Config` 常量：
+模块代码**只存在于一个进程**：system_server（scope=system，无 UI 进程）。
+"两个进程"是历史形态（曾有 Compose UI），已随无 UI 化移除。
 
-|                   | 模块自身进程（UI 侧）                            | system_server（hook 侧）                            |
-|-------------------|--------------------------------------------------|-----------------------------------------------------|
-| 运行者            | `MainActivity`（Compose UI）、`XposedProvider`   | `DoNotComplainEntry` → `SystemHooker`               |
-| 类加载来源        | APK 自身 + service AAR 打包的类                  | 框架的模块 classloader（提供 api 构件的运行时实现） |
-| 与框架通信        | `XposedServiceHelper` → binder → `XposedService` | `XposedInterface.getRemotePreferences()`（只读）    |
-| RemotePreferences | 可写（`edit().apply()` 经 binder 提交到框架）    | 只读快照 + 变化监听                                 |
-| 崩溃后果          | 模块 UI 闪退，无大碍                             | **整机重启循环**                                    |
+| 维度             | 现状                                                             |
+|------------------|------------------------------------------------------------------|
+| 运行者           | `DoNotComplainEntry` → `SystemHooker`，仅 system_server          |
+| 类加载来源       | 框架的模块 classloader（提供 api 构件的运行时实现）              |
+| 与框架通信       | 仅 `XposedInterface`（log / hook / deoptimize）；无 service 依赖 |
+| 配置             | **无**——LSPosed 启用开关即唯一开关（RL-17）                      |
+| 崩溃后果         | **整机重启循环**                                                 |
 
-**关键认知**：hook 侧永远不要假设 UI 侧存在过。`SystemHooker.install()` 里 `getRemotePreferences` 失败是正常路径（RL-18 的回落即为此设计）。
-
-### 5.1 数据流（配置下发）
-
-```
-UI: Switch 切换 → prefs.edit().putBoolean("enabled", b).apply()
-      → binder → 框架持久化 → 推送变化
-hook 侧: RemotePreferences（同一 group="config"）
-      → 每次 hooker 触发时 getBoolean("enabled", true) 实时读取
-      → 关闭后下一次查询即恢复真实结果（无需重启任何东西）
-```
-
-### 5.2 hook 覆盖矩阵
+### 5.1 hook 覆盖矩阵
 
 | Android 版本     | NMS are*                        | NMS getChannel* | AppOps checkOperation | PermissionManager check* |
 |------------------|---------------------------------|-----------------|-----------------------|--------------------------|
@@ -223,7 +230,7 @@ unzip -p app/build/outputs/apk/release/*.apk META-INF/xposed/module.prop
 2. **开机日志**：LSPosed 日志里出现 `Installed N hooks in system_server`（N > 0；N == 0 说明符号探测全部失败，按 §3 的候选表逐项排查该 ROM）。
 3. **功能正向**：禁用应用 X 的通知 → 打开 X → 无"开启通知"引导；X 的通知确实不送达。
 4. **功能反向（关键）**：设置 → 应用 X → 通知：开关显示为**关**（RL-02 的真实验证）。
-5. **开关回滚**：模块 UI 关闭总开关 → X 内再查（可用 `adb shell dumpsys notification --noredact | grep` 或应用内行为）→ 恢复真实结果。
+5. **禁用回滚**：LSPosed 中禁用模块 → 重启 → X 内查询恢复真实结果（无应用内开关）。
 6. **渠道粒度**：关闭 X 的某个渠道 → X 内该渠道显示为默认开启状态（而非关闭）。
 7. **稳定性 soak**：日常使用 24h，无 system_server 重启（`adb shell uptime` 与 `sys.boot_completed` 交叉确认）。
 
@@ -241,11 +248,12 @@ unzip -p app/build/outputs/apk/release/*.apk META-INF/xposed/module.prop
 [ ] 新增反射是否独立 try + 独立降级？ → RL-06
 [ ] hooker 内是否引入了新状态/线程/出调用？ → RL-08/09
 [ ] 是否动了 META-INF/xposed/ 的文件位置或内容？ → RL-10/14
-[ ] 依赖方式是否仍是 api=compileOnly / service=implementation？ → RL-11
+[ ] 依赖是否仍只有 compileOnly(libxposed.api)？ → RL-11/18
 [ ] manifest 是否手动声明了 Provider？ → RL-12
 [ ] keep 规则是否覆盖新入口/新反射目标？ → RL-13
-[ ] Config 常量改动是否两侧同步？ → RL-17
-[ ] enabled() 回落语义是否被改变？ → RL-18
+[ ] 是否引入了 UI / Activity / 配置？ → RL-17（不允许）
+[ ] 热重载三要素是否完整？ → RL-15
+[ ] 是否动了 kotlin 条目？ → composeBom 是否同步升到同期或更新（RL-19）
 [ ] §7 构建验证协议是否全过？
 [ ] 若行为变化：README/README_ZH 的验证状态表是否需要更新（诚实性）？
 ```
@@ -267,10 +275,10 @@ unzip -p app/build/outputs/apk/release/*.apk META-INF/xposed/module.prop
 ## 11. 编码与提交规范
 
 - **代码注释**：中文；契约与不变式写在紧邻代码处（本文档 §2/§3 的条目大多在源码有对应注释——修改行为时同步注释）。
-- **常量集中**：双进程共享的魔法值（group/key/类名候选表/常量 ID）必须留在 `Config` 或 `SystemHooker` 顶部的常量区，不得内联到逻辑中。
+- **常量集中**：魔法值（类名候选表 / AppOps 码 / importance 值）必须留在 `SystemHooker` 顶部的常量区，不得内联到逻辑中。
 - **提交粒度**：一个提交一个意图；修复 RL 违例的提交须在 message 里引用 RL 编号。
 - **文档同步**：改 hook 面 / 安全性质 → 同步 README 的 Features 与原理图；改验证状态 → 同步验证表（诚实性要求见 §0）。
-- **不引入**：运行时日志开关（remote prefs 已够用）、任何应用侧 hook、DexKit 之类重依赖（当前 hook 面用不到特征搜索）。
+- **不引入**：UI / Activity / 配置体系（RL-17）、任何应用侧 hook、DexKit 之类重依赖（当前 hook 面用不到特征搜索）。
 
 ---
 

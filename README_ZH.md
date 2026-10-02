@@ -18,10 +18,10 @@
   作用域静态为 `system`（`staticScope=true`，`scope.list=system`）。任何应用进程都不被触碰——应用内的完整性检查、`/proc/self/maps` 扫描都找不到模块的痕迹。这也是通用性的来源：一套 hook 覆盖设备上*所有*应用，包括现在与将来安装的。
 
 - **四层查询覆盖**（签名已与 AOSP 8.1 / 13 源码核对）
-    - `NotificationManagerService#areNotificationsEnabledForPackage` / `#areNotificationsEnabledForChannel` / `#areChannelsEnabled`——`NotificationManager.areNotificationsEnabled()` 与 `NotificationManagerCompat.areNotificationsEnabled()`（几乎所有应用和推送 SDK 的用法）的终点；
-    - `AppOpsService#checkOperation`——覆盖直接用 `AppOpsManager` 探测 `OP_POST_NOTIFICATION` 的应用；
-    - `PermissionManagerService#checkPermission` / `#checkUidPermission`（Android 13+）——`POST_NOTIFICATIONS` 运行时权限的查询路径；
-    - `NotificationManagerService#getNotificationChannel(s)`——渠道粒度：被用户关闭的渠道上报为 `IMPORTANCE_DEFAULT` 而非 `IMPORTANCE_NONE`。
+  - `NotificationManagerService#areNotificationsEnabledForPackage` / `#areNotificationsEnabledForChannel` / `#areChannelsEnabled`——`NotificationManager.areNotificationsEnabled()` 与 `NotificationManagerCompat.areNotificationsEnabled()`（几乎所有应用和推送 SDK 的用法）的终点；
+  - `AppOpsService#checkOperation`——覆盖直接用 `AppOpsManager` 探测 `OP_POST_NOTIFICATION` 的应用；
+  - `PermissionManagerService#checkPermission` / `#checkUidPermission`（Android 13+）——`POST_NOTIFICATIONS` 运行时权限的查询路径；
+  - `NotificationManagerService#getNotificationChannel(s)`——渠道粒度：被用户关闭的渠道上报为 `IMPORTANCE_DEFAULT` 而非 `IMPORTANCE_NONE`。
 
 - **只欺骗查询——绝不欺骗裁决**
   投递路径（`NMS#enqueueNotification` → importance 检查 → 丢弃）与被 hook 的查询方法**零代码共享**。Android 13+ 上，投递侧检查甚至运行在 `clearCallingIdentity()` 之下（calling uid = system），与自查谎言结构性隔离。**应用以为通知开着；系统继续执行你的关闭开关。**
@@ -35,11 +35,11 @@
 - **绝不原地修改系统对象**
   `getNotificationChannel` 返回的可能是 `NMS` 存储状态的同一个对象。模块通过 `Parcel` 往返克隆渠道后改写副本——系统持久化的渠道状态绝不被修改。
 
-- **实时总开关**
-  模块 UI 里的 RemotePreferences 开关实时下发到 hook 侧。关掉它，所有查询立即恢复真实结果——无需重启手机、无需重启应用。应急回滚只需一次点击。
+- **零界面、零配置**（对标 [DisableFlagSecure](https://github.com/LSPosed/DisableFlagSecure)）
+  模块不含任何 Activity。LSPosed 的启用开关就是开关：启用 = 全局欺骗所有应用的自身查询；禁用 = 立即恢复全部真实结果。无需配置、无需打开，release APK 约 60 KB，唯一依赖为 `compileOnly`。
 
-- **框架能力检测**
-  UI 显示框架名称/版本/作用域，并检查 `PROP_CAP_SYSTEM`——若当前框架不支持 hook 系统进程，你会看到明确警告，而不是一个静默失效的模块。
+- **支持热重载**
+  `autoHotReload=true`：模块在 system_server 内自我更新，无需重启设备。hook 以稳定 id（`Executable.toGenericString()`）注册，重载时同 id 原子替换、陈旧 hook 自动卸载，system ClassLoader 经 saved state 跨代传递。
 
 - **容错 OEM 符号探测**
   `AppOpsService` 在 Android 各版本间迁移过三次包名（8.x → 9/10 → 11+）；模块按候选表探测，按方法名 + 参数形态匹配 binder 方法（而非精确签名），且每个 hook 点彼此独立——一个符号缺失只禁用该点，不影响其余。
@@ -91,12 +91,6 @@ Installed N hooks in system_server
 
 4. 验证效果：选一个已禁用通知的应用 → 打开它 → 不再出现"开启通知"的提示或横幅；它的通知依然被屏蔽；设置页里该应用的通知开关依然显示为关。
 
-## 🧩 模块 UI
-
-- **状态卡片**——框架名称/版本、生效作用域；框架缺少系统进程 hook 能力（`PROP_CAP_SYSTEM`）时显示警告。
-- **总开关**——全局启用/停用欺骗，即时生效（RemotePreferences 实时下发到 hook 侧，无需重启）。
-- **原理卡片**——内置说明模块碰什么、不碰什么。
-
 ## ⚙️ 环境要求
 
 - **框架**：LSPosed（或任何实现 libxposed API **102** 的框架），且具备系统进程 hook 能力（`PROP_CAP_SYSTEM`）
@@ -110,16 +104,16 @@ Installed N hooks in system_server
 
 | 项目                               | 状态        | 证据                                                                                                                            |
 |------------------------------------|-------------|---------------------------------------------------------------------------------------------------------------------------------|
-| Gradle 构建（debug + release，R8） | ✅ 已验证   | 两种变体构建干净；release 为单个 1.5 MB dex                                                                                     |
+| Gradle 构建（debug + release，R8） | ✅ 已验证   | 两种变体构建干净；release APK 64 KB（dex 19 KB）                                                                                |
 | 模块元数据打包                     | ✅ 已验证   | 两个 APK 内均确认 `META-INF/xposed/{java_init.list, module.prop, scope.list}`                                                   |
-| 入口类未被 R8 混淆                 | ✅ 已验证   | release dex 中存在未混淆的 `dont/complain/DoNotComplainEntry`                                                                   |
+| 入口类经受 R8 混淆                 | ✅ 已验证   | 入口混淆为 `Lh;`（XposedModule 子类）；`java_init.list` 经 `-adaptresourcefilecontents` 自动改写（DFS 模式）                    |
 | Hook 点签名                        | ✅ 源码核对 | 与 AOSP `android-8.1.0_r81`、`android-13.0.0_r1` 交叉核对（NMS、PermissionHelper、AppOpsService、客户端 `NotificationManager`） |
 | 投递路径隔离                       | ✅ 源码核对 | 13+：`PermissionHelper.hasPermission` 运行于 `clearCallingIdentity()`；<13：AppOps 栈守卫覆盖内部 `checkOpNoThrow` 调用         |
 | 真机行为                           | ⏳ 尚未测试 | 未做真机验证——见"项目状态"                                                                                                      |
 
 ## ⚠️ 项目状态
 
-核心实现完成且通过构建验证，但**尚未进行真机测试**。hook 点是对 AOSP 源码核对的，不是对 OEM 分支——厂商 ROM 可能重命名或重塑内部服务（候选表探测能缓解但不能保证）。`system_server` 内的崩溃会把整个系统一起带崩，因此在新 ROM 上的首次开机请当作测试会话对待：保持总开关可达，并做好通过 recovery 禁用模块的预案。
+核心实现完成且通过构建验证，但**尚未进行真机测试**。hook 点是对 AOSP 源码核对的，不是对 OEM 分支——厂商 ROM 可能重命名或重塑内部服务（候选表探测能缓解但不能保证）。`system_server` 内的崩溃会把整个系统一起带崩，因此在新 ROM 上的首次开机请当作测试会话对待：做好通过 LSPosed（或 recovery）禁用模块的预案。
 
 ## 🚫 非商业声明
 

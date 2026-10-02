@@ -18,10 +18,10 @@ The name is the whole design: apps should not complain about a decision their us
   The module's scope is statically `system` (`staticScope=true`, `scope.list=system`). No app process is ever touched — nothing for an in-app integrity check or `/proc/self/maps` scan to find. This is also why it generalizes: one set of hooks covers *every* app on the device, present and future.
 
 - **Four-layer query coverage** (signatures verified against AOSP 8.1 / 13 sources)
-    - `NotificationManagerService#areNotificationsEnabledForPackage` / `#areNotificationsEnabledForChannel` / `#areChannelsEnabled` — the endpoint of `NotificationManager.areNotificationsEnabled()` and `NotificationManagerCompat.areNotificationsEnabled()` (which nearly every app and push SDK uses);
-    - `AppOpsService#checkOperation` — for apps probing `OP_POST_NOTIFICATION` through `AppOpsManager` directly;
-    - `PermissionManagerService#checkPermission` / `#checkUidPermission` (Android 13+) — the runtime-permission path that `POST_NOTIFICATIONS` queries take;
-    - `NotificationManagerService#getNotificationChannel(s)` — per-channel states: channels the user turned off are reported as `IMPORTANCE_DEFAULT` instead of `IMPORTANCE_NONE`.
+  - `NotificationManagerService#areNotificationsEnabledForPackage` / `#areNotificationsEnabledForChannel` / `#areChannelsEnabled` — the endpoint of `NotificationManager.areNotificationsEnabled()` and `NotificationManagerCompat.areNotificationsEnabled()` (which nearly every app and push SDK uses);
+  - `AppOpsService#checkOperation` — for apps probing `OP_POST_NOTIFICATION` through `AppOpsManager` directly;
+  - `PermissionManagerService#checkPermission` / `#checkUidPermission` (Android 13+) — the runtime-permission path that `POST_NOTIFICATIONS` queries take;
+  - `NotificationManagerService#getNotificationChannel(s)` — per-channel states: channels the user turned off are reported as `IMPORTANCE_DEFAULT` instead of `IMPORTANCE_NONE`.
 
 - **Only the query is lied to — never the verdict**
   The delivery path (`NMS#enqueueNotification` → importance check → drop) shares *no* code with the hooked query methods. On Android 13+, the delivery-side check even runs under `clearCallingIdentity()` (calling uid = system), so it is structurally isolated from the self-query lie. **Apps believe notifications are on; the system continues to enforce your off switch.**
@@ -35,11 +35,11 @@ The name is the whole design: apps should not complain about a decision their us
 - **No in-place mutation of system objects**
   `getNotificationChannel` may return the very object `NMS` stores its state in. The module clones channels via `Parcel` round-trip and rewrites the copy — the system's persisted channel state is never modified.
 
-- **Live master switch**
-  A RemotePreferences-backed toggle in the module UI propagates to the hooks in real time. Turn it off and every query immediately returns the truth again — no reboot, no app restart. Emergency rollback is one tap away.
+- **Zero UI, zero configuration** (modeled after [DisableFlagSecure](https://github.com/LSPosed/DisableFlagSecure))
+  The module ships no activities at all. The LSPosed enable switch *is* the switch: enable = deceive every app's self-queries globally; disable = full truth restored. Nothing to configure, nothing to launch, ~60 KB release APK with a single `compileOnly` dependency.
 
-- **Framework capability detection**
-  The UI displays the framework name/version/scope and checks `PROP_CAP_SYSTEM` — if the installed framework cannot hook system processes, you see a clear warning instead of a silently dead module.
+- **Hot reload support**
+  `autoHotReload=true`: the module updates itself inside `system_server` without rebooting the device. Hooks are registered with stable ids (`Executable.toGenericString()`); a reload atomically replaces same-id hooks and unhooks stale ones, with the system `ClassLoader` carried across generations via saved state.
 
 - **OEM-tolerant symbol discovery**
   `AppOpsService` has moved packages three times across Android versions (8.x → 9/10 → 11+); the module probes a candidate list, matches binder methods by name + parameter shape (not exact signatures), and treats every hook point as independent — one missing symbol disables that point only.
@@ -91,12 +91,6 @@ Installed N hooks in system_server
 
 4. Verify the effect: pick an app whose notifications you have disabled → open it → no more "enable notifications" prompts or banners. Its notifications remain blocked. The Settings page still shows the toggle as off.
 
-## 🧩 Module UI
-
-- **Status card** — framework name/version, effective scope, and a warning if the framework lacks system-process hooking capability (`PROP_CAP_SYSTEM`).
-- **Master switch** — enables/disables the deception globally, effective immediately (RemotePreferences propagate to the hooks without reboot).
-- **Principle card** — a built-in recap of what the module does and does not touch.
-
 ## ⚙️ Requirements
 
 - **Framework**: LSPosed (or any framework implementing libxposed API **102**) with system-process hooking capability (`PROP_CAP_SYSTEM`)
@@ -110,16 +104,16 @@ Honest accounting of what has and has not been verified:
 
 | Item                               | Status            | Evidence                                                                                                                                     |
 |------------------------------------|-------------------|----------------------------------------------------------------------------------------------------------------------------------------------|
-| Gradle build (debug + release, R8) | ✅ verified       | Both variants build clean; release is a single 1.5 MB dex                                                                                    |
+| Gradle build (debug + release, R8) | ✅ verified       | Both variants build clean; release APK is 64 KB with a 19 KB dex                                                                             |
 | APK packaging of module metadata   | ✅ verified       | `META-INF/xposed/{java_init.list, module.prop, scope.list}` confirmed inside both APKs                                                       |
-| Entry class survives R8            | ✅ verified       | `dont/complain/DoNotComplainEntry` present un-obfuscated in release dex                                                                      |
+| Entry class survives R8            | ✅ verified       | Entry obfuscated to `Lh;` extending `XposedModule`; `java_init.list` auto-rewritten by `-adaptresourcefilecontents` (DFS pattern)            |
 | Hook-point signatures              | ✅ source-audited | Cross-checked against AOSP `android-8.1.0_r81` and `android-13.0.0_r1` (NMS, PermissionHelper, AppOpsService, client `NotificationManager`)  |
 | Delivery-path isolation            | ✅ source-audited | 13+: `PermissionHelper.hasPermission` runs under `clearCallingIdentity()`; <13: AppOps stack guard covers the internal `checkOpNoThrow` call |
 | On-device behavior                 | ⏳ not yet tested | No real-device pass has been performed — see Project Status                                                                                  |
 
 ## ⚠️ Project Status
 
-Core implementation is complete and build-verified, but **no real-device test has been performed yet**. The hook points are audited against AOSP sources, not against OEM forks — vendor ROMs may rename or reshape internal services (the candidate-list probing mitigates, but cannot guarantee, this). A crash inside `system_server` takes the whole system down with it, so treat the first boots on a new ROM as a test session: keep the master switch reachable and be prepared to disable the module via recovery if boot loops occur.
+Core implementation is complete and build-verified, but **no real-device test has been performed yet**. The hook points are audited against AOSP sources, not against OEM forks — vendor ROMs may rename or reshape internal services (the candidate-list probing mitigates, but cannot guarantee, this). A crash inside `system_server` takes the whole system down with it, so treat the first boots on a new ROM as a test session: be prepared to disable the module via LSPosed (or recovery) if boot loops occur.
 
 ## 🚫 Non-Commercial Statement
 
