@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <string name="app_name">不许抱怨</string>
+    <string name="module_description">让没有通知权限的软件闭嘴</string>
+</resources>

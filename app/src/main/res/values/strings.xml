@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">DoNotComplain</string>
-    <string name="module_description">让应用误以为通知权限已开启，从而不再弹出“开启通知”类提示。仅注入 system_server，不进入任何应用进程。</string>
+    <string name="app_name">Do Not Complain</string>
+    <string name="module_description">Silence apps that lack notification permission.</string>
 </resources>
