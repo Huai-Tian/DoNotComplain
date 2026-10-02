@@ -28,8 +28,8 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures {
         compose = true
@@ -37,6 +37,12 @@ android {
 }
 
 dependencies {
+    // libxposed 现代 API：hook 侧仅编译期引用（运行时由框架提供）
+    compileOnly(libs.libxposed.api)
+    compileOnly(libs.libxposed.annotation)
+    // 模块自身 UI 与框架服务通信
+    implementation(libs.libxposed.service)
+
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)

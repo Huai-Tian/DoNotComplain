@@ -5,6 +5,7 @@
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
+        android:description="@string/module_description"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -23,6 +24,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- libxposed 服务 Provider（XposedProvider）由 service AAR 自带声明合并注入：
+             authority 为 ${applicationId}.XposedService，框架守护进程借此推送 binder。 -->
     </application>
 
 </manifest>

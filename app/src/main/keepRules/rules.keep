@@ -1,4 +1,10 @@
 # Add project specific R8 rules here.
+
+# Xposed 入口类由框架按 java_init.list 中的名称加载，禁止混淆
+-keep class dont.complain.DoNotComplainEntry { *; }
+
+# libxposed API 以 compileOnly 引入，运行时由框架提供
+-dontwarn io.github.libxposed.**
 # AGP will combine all keep rule files in src/main/keepRules to pass to R8
 #
 # For more details, see
