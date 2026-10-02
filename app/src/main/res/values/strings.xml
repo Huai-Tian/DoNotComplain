@@ -1,12 +1,4 @@
 <resources>
     <string name="app_name">DoNotComplain</string>
     <string name="module_description">让应用误以为通知权限已开启，从而不再弹出“开启通知”类提示。仅注入 system_server，不进入任何应用进程。</string>
-    <string name="status_not_activated">未检测到 Xposed 服务\n请确认模块已安装，并在 LSPosed 中对其启用</string>
-    <string name="framework_fmt">框架：%1$s %2$s</string>
-    <string name="scope_fmt">作用域：%1$s</string>
-    <string name="no_system_cap">当前框架不支持 system_server 注入，模块无法生效</string>
-    <string name="master_switch_title">启用权限欺骗</string>
-    <string name="master_switch_subtitle">关闭后查询立即恢复真实结果，无需重启</string>
-    <string name="hint_title">工作原理</string>
-    <string name="hint_body">模块仅注入 system_server：应用查询自身通知权限（NotificationManager / AppOps / POST_NOTIFICATIONS 运行时权限 / 渠道状态）时得到“已开启”，而系统的实际投递裁决不受影响。系统与设置界面查询任何应用时看到的仍是真实状态。</string>
 </resources>

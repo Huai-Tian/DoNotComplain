@@ -1,18 +1,11 @@
-# Add project specific R8 rules here.
+# 对齐 DisableFlagSecure 的 keep 策略：
+# 入口类允许混淆（保留构造器与 XposedModule 继承关系），
+# java_init.list 内容随混淆名自动改写。
+-adaptresourcefilecontents META-INF/xposed/java_init.list
 
-# Xposed 入口类由框架按 java_init.list 中的名称加载，禁止混淆
--keep class dont.complain.DoNotComplainEntry { *; }
+-keep,allowobfuscation,allowoptimization public class * extends io.github.libxposed.api.XposedModule {
+    public <init>(...);
+}
 
 # libxposed API 以 compileOnly 引入，运行时由框架提供
 -dontwarn io.github.libxposed.**
-# AGP will combine all keep rule files in src/main/keepRules to pass to R8
-#
-# For more details, see
-#   https://d.android.com/r/tools/r8/keep-rules
-
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}

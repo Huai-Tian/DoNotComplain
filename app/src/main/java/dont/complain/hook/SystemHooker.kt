@@ -1,12 +1,10 @@
 package dont.complain.hook
 
 import android.app.NotificationChannel
-import android.content.SharedPreferences
 import android.os.Binder
 import android.os.Build
 import android.os.Parcel
 import android.util.Log
-import dont.complain.Config
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.Chain
 import io.github.libxposed.api.XposedInterface.Hooker
@@ -53,13 +51,16 @@ object SystemHooker {
         "com.android.server.pm.permission.PermissionManagerService", // 委托链上的旧类名
     )
 
-    private var prefs: SharedPreferences? = null
+    /**
+     * 已注册 hook 的 id 集合（id = executable.toGenericString()）。
+     * 热重载时重装同 id 的 hook 会原子替换；入口类据此卸载未被重建的旧 hook。
+     */
+    val hookedIds = mutableSetOf<String>()
 
     private val uidPackages = ConcurrentHashMap<Int, Set<String>>()
 
+    /** 无配置设计：LSPosed 启用开关即唯一开关，启用 = 欺骗全部应用的自身查询 */
     fun install(xposed: XposedInterface, classLoader: ClassLoader) {
-        prefs = runCatching { xposed.getRemotePreferences(Config.PREFS_GROUP) }.getOrNull()
-
         var count = 0
         count += hookNotificationManagerService(xposed, classLoader)
         count += hookAppOpsService(xposed, classLoader)
@@ -68,8 +69,6 @@ object SystemHooker {
         }
         xposed.log(Log.INFO, TAG, "Installed $count hooks in system_server")
     }
-
-    private fun enabled() = prefs?.getBoolean(Config.KEY_ENABLED, true) ?: true
 
     // ------------------------------------------------------------------
     // NotificationManagerService
@@ -109,15 +108,11 @@ object SystemHooker {
 
     /** 应用查询自身总开关 / 渠道开关时返回 true */
     private val nmsBoolHooker: Hooker = Hooker { chain ->
-        if (!enabled()) {
-            chain.proceed()
+        val uidArg = chain.args.getOrNull(1) as? Int
+        if (uidArg != null && Binder.getCallingUid() == uidArg) {
+            true
         } else {
-            val uidArg = chain.args.getOrNull(1) as? Int
-            if (uidArg != null && Binder.getCallingUid() == uidArg) {
-                true
-            } else {
-                chain.proceed()
-            }
+            chain.proceed()
         }
     }
 
@@ -156,19 +151,15 @@ object SystemHooker {
      * 结果，保证“查询被欺骗、投递不受影响”。
      */
     private val appOpsHooker: Hooker = Hooker { chain ->
-        if (!enabled()) {
-            chain.proceed()
+        val args = chain.args
+        val code = args.getOrNull(0) as? Int
+        val uid = args.getOrNull(1) as? Int
+        if (code == OP_POST_NOTIFICATION && uid != null
+            && Binder.getCallingUid() == uid && !isSystemInternalCall(chain)
+        ) {
+            ALLOWED
         } else {
-            val args = chain.args
-            val code = args.getOrNull(0) as? Int
-            val uid = args.getOrNull(1) as? Int
-            if (code == OP_POST_NOTIFICATION && uid != null
-                && Binder.getCallingUid() == uid && !isSystemInternalCall(chain)
-            ) {
-                ALLOWED
-            } else {
-                chain.proceed()
-            }
+            chain.proceed()
         }
     }
 
@@ -205,32 +196,24 @@ object SystemHooker {
     }
 
     private val permPkgHooker: Hooker = Hooker { chain ->
-        if (!enabled()) {
-            chain.proceed()
+        val args = chain.args
+        val perm = args.getOrNull(0) as? String
+        val pkg = args.getOrNull(1) as? String
+        if (perm == POST_NOTIFICATIONS && pkg != null && isSelfPackage(pkg)) {
+            ALLOWED
         } else {
-            val args = chain.args
-            val perm = args.getOrNull(0) as? String
-            val pkg = args.getOrNull(1) as? String
-            if (perm == POST_NOTIFICATIONS && pkg != null && isSelfPackage(pkg)) {
-                ALLOWED
-            } else {
-                chain.proceed()
-            }
+            chain.proceed()
         }
     }
 
     private val permUidHooker: Hooker = Hooker { chain ->
-        if (!enabled()) {
-            chain.proceed()
+        val args = chain.args
+        val perm = args.getOrNull(0) as? String
+        val uid = args.getOrNull(1) as? Int
+        if (perm == POST_NOTIFICATIONS && uid != null && Binder.getCallingUid() == uid) {
+            ALLOWED
         } else {
-            val args = chain.args
-            val perm = args.getOrNull(0) as? String
-            val uid = args.getOrNull(1) as? Int
-            if (perm == POST_NOTIFICATIONS && uid != null && Binder.getCallingUid() == uid) {
-                ALLOWED
-            } else {
-                chain.proceed()
-            }
+            chain.proceed()
         }
     }
 
@@ -247,7 +230,7 @@ object SystemHooker {
      */
     private val channelHooker: Hooker = Hooker { chain ->
         val result = chain.proceed()
-        if (enabled() && isSelfChannelQuery(chain)) rewriteChannels(result) else result
+        if (isSelfChannelQuery(chain)) rewriteChannels(result) else result
     }
 
     private fun isSelfChannelQuery(chain: Chain): Boolean {
@@ -356,7 +339,10 @@ object SystemHooker {
 
     private fun hookSafely(xposed: XposedInterface, method: Method, hooker: Hooker): Boolean =
         runCatching {
-            xposed.hook(method).intercept(hooker)
+            val id = method.toGenericString()
+            // 同 id 重复安装 = 原子替换（热重载的幂等基础）
+            xposed.hook(method).setId(id).intercept(hooker)
+            hookedIds.add(id)
             true
         }.getOrElse {
             xposed.log(Log.WARN, TAG, "Failed to hook ${method.declaringClass.name}#${method.name}", it)
