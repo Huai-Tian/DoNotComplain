@@ -18,7 +18,10 @@
 
 ## 已验证
 
-真机实测通过：OPPO PGX110 / ColorOS 15（Android 15）。
+真机实测通过：
+
+- OPPO PGX110 / ColorOS 15（Android 15）
+- OPPO PLR110 / ColorOS 16（Android 16）
 
 多款主流应用的"开启通知"引导全部消失；系统通知开关的真实状态与投递行为不受影响。
 

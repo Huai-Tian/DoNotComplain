@@ -18,7 +18,10 @@ It does **not** re-enable your notifications. They stay off, nothing gets delive
 
 ## Verified
 
-Tested on a real device: OPPO PGX110 / ColorOS 15 (Android 15).
+Tested on real devices:
+
+- OPPO PGX110 / ColorOS 15 (Android 15)
+- OPPO PLR110 / ColorOS 16 (Android 16)
 
 "Enable notifications" prompts in multiple mainstream apps all disappeared; the real notification toggles and delivery behavior were unaffected.
 
