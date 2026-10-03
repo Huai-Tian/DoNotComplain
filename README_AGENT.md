@@ -55,8 +55,9 @@
 - **RL-03** `isSystemInternalCall`（AppOps hooker 的调用栈检查：出现 `com.android.server.*` 帧即放行真相）**不可删除或简化**。Android < 13 的投递路径会以应用身份（uid 相同）内部调用 `checkOpNoThrow`——uid 匹配拦不住它，只有栈帧能区分。
   `[删掉后：Android 8.1-12 上被禁用的通知真实送达（同 RL-01 后果），且只在旧版本复现，极难排查]`
 
-- **RL-04** `getNotificationChannel(s)` 的返回值**必须 Parcel 克隆后修改**，绝不原地 `setImportance`。返回的 `NotificationChannel` 可能就是 NMS `PreferencesHelper` 存储状态的那个对象。
-  `[原地修改 = 系统持久化的渠道状态被真实改写 = 用户渠道设置损坏 + 重启后状态错乱]`
+- **RL-04** `getNotificationChannel(s)` 的返回值**必须 Parcel 克隆后修改**，绝不原地 `setImportance`；只对 `javaClass == NotificationChannel` 的确切基类实例克隆（克隆后二次校验）；整个改写包 runCatching、失败回退原值——**hooker 永不向外抛异常**。返回对象可能是 NMS 存储状态的同一实例，也可能是 OEM 子类（其 parcel 布局与基类 CREATOR 不兼容是真实风险）。importance 常量**必须直接引用 `NotificationManager.IMPORTANCE_*`**，不得自造同值常量——`setImportance` 参数带 `@Importance @IntDef` 注解，自造常量会被 IDE 检查标记（见下条判例）。
+  `[原地修改 = 系统持久化渠道状态被真实改写]`
+  `[判例（误诊存档）："Must be one of: IMPORTANCE_UNSPECIFIED, ... NONE, MIN, LOW, DEFAULT, HIGH" 是 IDE 对 @IntDef 参数的静态检查提示，起因是代码用了自造常量 IMPORTANCE_DEFAULT = 3。首次出现时被误诊为 ColorOS 运行时崩溃并"修复"了一轮——实际设备从未崩过。教训：IDE 提示文本 ≠ 运行时异常；看到注解风格的约束措辞先查注解源头。类守卫与 runCatching 作为防御保留（理论风险成立），但"已发生崩溃"不成立，记录在此防止再次误读]`
 
 - **RL-05** 渠道改写只做 `IMPORTANCE_NONE → IMPORTANCE_DEFAULT` 单向提升，且只对已是 `NONE` 的生效。不要"顺手"改 `setBypassDnd`、`setSound` 等其他属性。
   `[超范围改写超出模块声明的能力面，且可能触发应用端对渠道对象的完整性比对]`
@@ -90,16 +91,17 @@
 
 ### D. 作用域与生命周期纪律
 
-- **RL-14** `scope.list` 内容固定为 `system`，`module.prop` 的 `staticScope=true` **不可改动**。
-  `[改成 false 或添加应用包名 = 违背"仅 system_server 注入"的架构承诺，模块开始进入应用进程]`
+- **RL-14** `scope.list` 固定为单行 `system`，`staticScope=true` 不变。**不得添加 com.android.providers.settings**——判例（真机+DuckUSB 源码核实）：SettingsProvider 声明 `android:process="system"`，**没有独立进程**，作为 ContentProvider attach 进 system_server 运行；给该包名加 scope 是无效操作（LSPosed 按包→进程注入，该包不启动独立进程，勾选会被回滚且无意义），Layer F 经 attachInfo 在 system_server 内截获 provider。也不得添加任何用户应用包名——DFS 对 scope 内的应用直接弹窗退出。
+  **staticScope 语义**：scope 由 APK 内 scope.list 静态声明，LSPosed 界面勾选会被回滚，属预期；scope 变更只能改 scope.list + 重装 + 重启。
+  `[加 settings provider 包名 = 无效 scope（无进程映射）；加用户应用 = 违背"系统侧修饰器"定位]`
 
 - **RL-15** 热重载按 DisableFlagSecure 模式实现（`autoHotReload=true`），**实现方式不可偏离三要素**：
-  1. 所有 hook 经 `hookSafely` 以 `method.toGenericString()` 为 id 注册（同 id 重装 = 原子替换）；
-  2. `onHotReloading` 把 system_server 的 `ClassLoader` 存入 saved state（宿主对象，非模块类加载器产物——唯一可安全跨代传递的载体）并返回 true；
-  3. `onHotReloaded` 用取回的 ClassLoader 重装 hook，再卸载 `oldHookHandles` 中 id 不在新 `hookedIds` 集合里的 hook。
+  1. 所有 hook（SystemHooker + SettingsHooker）以 `method.toGenericString()` 为 id 注册，id 统一进 `SystemHooker.hookedIds`（同 id 重装 = 原子替换）；
+  2. `onHotReloading` 把 system_server 的 `ClassLoader` + 已捕获的 `SettingsHooker.providerClass`（均宿主对象）存入 saved state 并返回 true；
+  3. `onHotReloaded` 用取回的 ClassLoader 重装全部 hook（SettingsProvider 不会二次 attach，providerClass 必须显式跨代传递），再卸载 `oldHookHandles` 中 id 不在新集合里的 hook。
      `[缺任何一环：要么 hook 双份叠加（无 id 替换），要么新代码拿到失效 ClassLoader 抛异常，要么旧 hook 残留指向已卸载的旧代类——都是重启循环级风险。v1 曾裁决"不做热重载"，DFS 的生产实现证明该模式可行，据此反转]`
 
-- **RL-16** 入口类只在 `onSystemServerStarting` 安装 hook，**不实现** `onPackageLoaded` / `onPackageReady`（system 作用域下不会被有意义地回调），**不调用** `detach()`。
+- **RL-16** 入口类只在 `onSystemServerStarting` 安装 hook（SystemHooker A-E 层 + SettingsHooker 等待器），**不实现** `onPackageReady`（scope 只有 system，收不到有意义的包回调），**不调用** `detach()`。
   `[在 system_server 里 detach() = 主动放弃后续生命周期 = 行为未定义]`
 
 ### E. 无 UI 纪律
@@ -113,16 +115,24 @@
 ### F. 工具链版本纪律
 
 - **RL-19** **历史教训（本项目已无 Compose，规则存档备查）**：AGP 9 上 `kotlin-compose` 插件会把自己的 KGP 带上 classpath（Gradle 取最高版本），因此 toml 的 `kotlin` 条目决定实际编译器版本；真正的兼容约束在 Compose 编译器 ↔ 运行时（composeBom）之间——**kotlin 与 composeBom 必须一起升降，BOM 不得早于该 Kotlin 发布期**。
-  AGP 9 的实际工具链机制（曾两度误诊，以 ScreenshotFaker 实测为准）：
-  1. AGP 9 禁止应用 KGP（`org.jetbrains.kotlin.android` 会被直接拒绝），Kotlin 编译走 built-in 路径，AGP POM 内嵌 KGP 2.2.10——**但这不是有效版本**；
-  2. `kotlin-compose` 插件（marker → `compose-compiler-gradle-plugin`）对自己的 KGP 是 **compile 依赖**，会被带上 build classpath，Gradle 冲突解析**取最高版本**——因此 toml 的 `kotlin` 条目实际决定了整个编译工具链（2.4.20 条目 = Kotlin 2.4.20 + Compose 编译器 2.4.20）。这就是 AGP 9 上能用 2.4.x 的原因，也是 `KotlinVersion.KOTLIN_2_4` 能编译通过的原因；
-  3. **真正的兼容约束在 Compose 编译器 ↔ Compose 运行时（BOM）之间**：编译器生成的代码要求运行时不低于其最低支持版本。运行时**新于**编译器 = 安全；**旧于** = 构建全绿，运行时首个 Composable 组合即崩溃（NoSuchMethodError 族）= "模块 UI 打不开"。
-     `[本项目真实事故：kotlin 2.4.20 + composeBom 2026.02.01（2 月运行时撑不起 2.4.20 编译器的生成代码）→ UI 崩溃。对照：ScreenshotFaker 用 2.4.10 + 2026.08.00 正常运行]`
-     `[曾用 "锁 2.2.10 = AGP 内嵌版本" 修复——结论错误但碰巧有效：旧编译器 + 任何较新运行时 = 兼容方向。正确修复是 kotlin 2.4.20 + BOM 2026.09.00]`
-     升级规则：动 `kotlin` 时，把 `composeBom` 升到与该 Kotlin 版本同期或更新的 BOM（如 2.4.20 → 2026.09.00）；动 `composeBom` 时无此约束（运行时变新总是安全方向，但注意行为变更）。
+  `[本项目真实事故：kotlin 2.4.20 + composeBom 2026.02.01（2 月运行时撑不起 2.4.20 编译器的生成代码）→ UI 崩溃。对照：ScreenshotFaker 用 2.4.10 + 2026.08.00 正常运行]`
+  `[曾用 "锁 2.2.10 = AGP 内嵌版本" 修复——结论错误但碰巧有效：旧编译器 + 任何较新运行时 = 兼容方向。正确修复是 kotlin 2.4.20 + BOM 2026.09.00]`
 
 - **RL-20** release 构建的 `optimization {}` **不得设置 `packageScope` 覆盖 `androidx.**` / `kotlin.**` / `kotlinx.**`**。本项目曾用模板生成的 `packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")`，导致 debug 正常、release 点击即闪退（混淆 stdlib/androidx 是头号嫌疑）；对齐 ScreenshotFaker 的工作配置（`optimization { enable = true }`，无 packageScope）后移除。未上真机验证前，不要往 release 混淆配置里加任何"看起来更优化"的项。
   `[packageScope 混淆依赖库 = release-only 运行时崩溃，构建零警告]`
+
+### G. 签名匹配纪律（多机型适配的核心约束）
+
+- **RL-21** hook 匹配**禁止写死参数位置/类型序列**，必须用"方法名 + 参数形态窗口 + 参数扫描"三段式：
+  1. 方法名集合（含 OEM 常见别名，可追加）；
+  2. 参数个数窗口（宽窗口：1..5 / 2..5）+ 返回类型 + 关键位类型（如首参 int）；
+  3. hooker 内按**值语义扫描参数**定位 perm/uid/pkg（权限名精确串匹配；uid = 值等于 calling uid 的 int 参数；pkg = 属于 calling uid 包集合的 String 参数）。
+     `[真实判例：checkUidPermission 在 T=(String,int,int)、15=(int,String,int)——按 T 写死首参 String 导致 OPPO ColorOS 15 上 PMS 层 0 命中，只剩 1 个 AppOps hook，欺骗大面积失效]`
+     数值碰撞防线：uid 族（checkUidPermission）只扫 int 参数（userId/deviceId < 10000 不会撞 app uid ≥ 10000）；pkg 族只扫 String 参数（权限名不会出现在包集合）。AMS 层 uid 取**最后一个** int 参数（AIDL pid 在前 uid 在后，跨版本稳定）。
+
+- **RL-22** 每层零命中时**必须**输出 `diag:` 方法签名 dump（dumpMethods）——这是新机型 bring-up 的唯一信息来源，删掉它等于断掉多机型适配工作流（§5.2）。
+
+- **RL-23** NMS 层的自查判定是 uid 匹配 **或** 包名匹配的并集（OEM 存在 `(pkg, userId)` 形态，userId 恒小值撞不上 uid，靠包名兜底）；Toast 投递路径（栈中含 "Toast" 帧的方法）放行真值——**不要**给 NMS 层加通用 com.android.server 栈守卫（13+ 的合法查询路径 `areNotificationsEnabled(pkg)` → `areNotificationsEnabledForPackage` 内部调用本身就在 com.android.server 帧内，通用守卫会把谎言全部拦截）。
 
 ---
 
@@ -138,6 +148,8 @@
 | "getNotificationChannel 用精确签名反射更严谨"      | OEM 的参数表有漂移（4 参/5 参、有无 conversationId）                                                              | 方法名 + 参数个数区间匹配 + 逐参数类型校验关键位（RL-06 同源）                                                    |
 | "NMS 的 binder 方法直接在 NMS 类里找"              | binder 实现在 NMS 的内部类（如 `NotificationService`）里                                                          | `collectSelfAndNested` 向下遍历两层嵌套类                                                                         |
 | "AppOpsService 就是 android.app.AppOpsService"     | 该类迁移过三次包名                                                                                                | 候选表探测：`com.android.server.appop.`(11+) / `android.app.`(9/10) / `com.android.server.`(8.x)                  |
+| "hook 匹配按精确签名写更严谨"                      | binder 签名跨版本/OEM 漂移（checkUidPermission T=(String,int,int) vs 15=(int,String,int)）                        | 方法名 + 形态窗口 + 参数扫描（RL-21，OPPO 判例）                                                                  |
+| "给 NMS 层也加 server 栈守卫更安全"                | 13+ 合法查询路径 areNotificationsEnabled(pkg)→ForPackage 的内部调用本身在 server 帧内                             | 只做 Toast 帧专项放行（RL-23）                                                                                    |
 | "MANIFEST 里声明 Provider 更可控"                  | AAR 自带声明且 exported=true，手动声明必冲突                                                                      | 删除手动声明，靠 manifest merge（RL-12，真实构建判例）                                                            |
 | "RemotePreferences 不可用时模块应该安全地不生效"   | （历史条目，UI 已移除）用户装框架就是为了生效                                                                     | 无配置设计：启用即生效（RL-17）                                                                                   |
 | "uidPackages 缓存该有过期机制"                     | uid→包映射在开机周期内单调；过期机制需要系统回调                                                                  | 只增不减（RL-09）                                                                                                 |
@@ -172,23 +184,59 @@
 
 ## 5. 单进程模型（建立心智模型）
 
-模块代码**只存在于一个进程**：system_server（scope=system，无 UI 进程）。
-"两个进程"是历史形态（曾有 Compose UI），已随无 UI 化移除。
+模块代码只运行在**一个进程**：system_server（scope=system）。SettingsProvider
+无独立进程（`android:process="system"`），它 attach 进 system_server 时被
+Layer F 经 `ContentProvider.attachInfo` 截获——scope 无需也无法为它加条目。
 
-| 维度             | 现状                                                             |
-|------------------|------------------------------------------------------------------|
-| 运行者           | `DoNotComplainEntry` → `SystemHooker`，仅 system_server          |
-| 类加载来源       | 框架的模块 classloader（提供 api 构件的运行时实现）              |
-| 与框架通信       | 仅 `XposedInterface`（log / hook / deoptimize）；无 service 依赖 |
-| 配置             | **无**——LSPosed 启用开关即唯一开关（RL-17）                      |
-| 崩溃后果         | **整机重启循环**                                                 |
+| 维度       | 现状                                                                              |
+|------------|-----------------------------------------------------------------------------------|
+| 运行者     | `DoNotComplainEntry` → SystemHooker（A-E）+ SettingsHooker（F），仅 system_server |
+| 类加载来源 | 框架的模块 classloader（提供 api 构件的运行时实现）                               |
+| 与框架通信 | 仅 `XposedInterface`（log / hook / deoptimize）；无 service 依赖                  |
+| 配置       | **无**——LSPosed 启用开关即唯一开关（RL-17）                                       |
+| 崩溃后果   | **整机重启循环**                                                                  |
 
-### 5.1 hook 覆盖矩阵
+### 5.1 hook 分层矩阵（Layer A-F）
 
-| Android 版本     | NMS are*                        | NMS getChannel* | AppOps checkOperation | PermissionManager check* |
-|------------------|---------------------------------|-----------------|-----------------------|--------------------------|
-| 8.1 – 12 (27-32) | ✅                              | ✅              | ✅（含 RL-03 栈守卫） | N/A                      |
-| 13+ (33+)        | ✅（deprecated 但 binder 仍在） | ✅              | ✅（守卫保留无害）    | ✅                       |
+| 层       | 宿主进程      | 目标                                                                                                                                                                                                                              | 覆盖的查询路径                                                                                                                   | 版本适用性                                                                                                                   |
+|----------|---------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------|
+| A AppOps | system_server | `AppOpsService#checkOperation[/Raw]`                                                                                                                                                                                              | 应用直接探测 `OP_POST_NOTIFICATION`                                                                                              | 8.1+（类名候选表跨版本）                                                                                                     |
+| B NMS    | system_server | `areNotificationsEnabled*[/Int]` / `areChannelsEnabled` / `getNotificationChannel(s)`                                                                                                                                             | `NotificationManager[Compat].areNotificationsEnabled()` 与渠道粒度                                                               | 8.1+；13+ 上 OEM 可能重构 NMS 导致 0 命中（此时由 C/D 兜底）                                                                 |
+| C PMS    | system_server | `PermissionManagerService[Impl]#checkPermission / checkUidPermission`                                                                                                                                                             | `POST_NOTIFICATIONS` 运行时权限 binder 路径                                                                                      | 13+（低于 13 无此权限，hooker 恒放行，无害）                                                                                 |
+| D AMS    | system_server | `ActivityManagerService#checkPermission(String,int,int)`（DFS 同款）                                                                                                                                                              | 15 上应用侧 `checkSelfPermission` 重算的汇聚点                                                                                   | 13+（AMS 路径在 15 上被 PermissionManager 静态缓存 miss 后使用）                                                             |
+| E Oplus  | system_server | **接口契约匹配（v10 加固）**：枚举 `IOplusNotificationManager` 全部 AIDL 查询方法（get/is/should/can 前缀、boolean/int 返回、2 参），扫描 NMS 全嵌套（含匿名类）中实现该接口的类按契约 hook；另含 ExtImpl 的 `Inner` 后缀变体兜底 | ColorOS 专有通知状态查询全套（Stow/Visibility/Badge/Banner/Ringtone/Vibration 及未来新增），FeatureSwitchReport 上报同变全开假象 | 仅 ColorOS；**OEM 门控** + **接口级类过滤**（防 NMS 本体同名方法误伤）；set/clear 写路径刻意不钩（ColorOS 设置界面不受影响） |
+
+| F Settings | system_server（provider 经 attachInfo 截获） | `ContentProvider.attachInfo` → `SettingsProvider#call / query`（**观察模式**，DuckUSB 同款） | 通用 Settings 读取可见性。抖音判例终局：`readSecureString` 是 FeatureSwitchReport 上报数据而非弹窗判定（两轮真机观察窗全覆盖零记录），观察模式保留作未来取证基础设施 | 全版本（SettingsProvider 常驻且必 attach） |
+**抖音战役战报（v1→v10.2，真机闭环 + 加固终局）**：制胜路径分两段——(1) v9 匿名类探测让 NMS 扫描覆盖 `NotificationManagerService$12`（binder Stub），NMS 层 2→8 hooks，抖音弹窗消失；(2) v10.x 加固把 E 层升级为**接口契约匹配**（从客户端类反射提取 `IOplusNotificationManager` 接口 → 枚举 12 个 AIDL 查询方法 → 全谱系接口过滤 + ExtImpl Inner 变体兜底）。**终局实证**（v10.2 留痕）：抖音检测器实际调用 `areNotificationsEnabled` + `isApp{Ringtone,Vibration}PermissionGranted` 三个查询，全部在欺骗覆盖内（`nms-lie`/`oplus-lie` 首次同时记录到抖音）；四个 int 方法（Stow/Visibility/Badge/Banner）为检测器备选分支（反编译走 LJ 辅助 vs 被调方法的 LIZLLL 辅助），真机未调用；`diag-lineage` 零输出证明其服务端不在 system_server——若字节 A/B 启用该分支，`svc-probe`/`svc-reg` 观察器在位可定位。多应用复测（抖音/学习通×2/学堂在线/番茄小说/Sukisu）全部通过。关键方法论沉淀：**OEM 的 binder 扩展常以匿名内部类挂在 AOSP 服务上**（`Class.forName("Outer$N")` 逐编号试探收集，`svc-probe` 定位）；**接口契约匹配 > 方法名硬编码**（对 OEM 增删方法免疫）；**命中留痕（lie 日志）是覆盖性验证的唯一硬证据**——"装了 hook"不等于"打了目标"，每层欺骗都应可观测。
+
+**版本 × 层的有效矩阵**：8.1-12 = A+B(+F)；13-14 原生 = A+B+C+D(+F)；15+（含 OEM）= A+B+C+D+E(+F)。每层的"安全空转"语义已核对：C/D 在 pre-13 恒放行（无人查 `POST_NOTIFICATIONS`），E 在非 ColorOS 静默跳过，F 观察模式只记录不改值——旧设备上绝无新增风险面。
+
+**探针分类学（v13 交付清理判例）**——交付时探针按"触发条件 × 未来价值"二分：
+
+| 保留（失败路径 / 冷路径 / 安装期，未来取证与适配）                                               | 移除（热路径，开发期覆盖验证，使命已完成）                                                          |
+|--------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------|
+| `dumpMethods`（仅 0-hook 时触发——新 ROM bring-up 协议 §5.2 的核心）                              | `nms-lie` / `oplus-lie`（每次欺骗命中的留痕——覆盖已实证；git 历史 v8-v10.2 可随时复活用于未来排查） |
+| `oplus-contract`（安装期一行/方法——新 ROM 接口契约的直接可见性）                                 | logOnce 的 logcat 双通道镜像（通道可用性诊断，假设已排除）                                          |
+| `diag-lineage`（仅结构漂移时触发——当前 ROM 零成本）                                              | `diag-client` / `diag-client-field` / `diag-extimpl-iface`（接口发现期产物，v10 已随重写移除）      |
+| `svc-probe` / `svc-reg`（安装期探测 + 服务注册冷路径——OPLUS 服务定位取证）                       |                                                                                                     |
+| Layer F `settings-obs`（长期取证基础设施；性能护栏：参数位缓存 / uid→包名缓存 / 上限后整层静默） |                                                                                                     |
+
+判定原则：**安装期与失败路径的探针是"适配成本"的投资（保留）；热路径上的验证探针是"运行时负担"（移除）**。未来若需覆盖性排查，从 git 历史复活 lie 日志（提交 a83382a/603c793 含完整实现）。
+
+**已实测的签名漂移记录**（arg-scan 匹配存在的原因）：
+- `checkUidPermission`：T = `(String permName, int uid, int userId)`；15 = `(int uid, String permName, int deviceId)`——首参类型都变了；
+- `checkPermission`：T = perm 在前；15 binder = pkg 在前、perm 第二；
+- `areNotificationsEnabled(String pkg)`：13+ 的客户端 binder 入口是 1 参（此前被 `2..3` 参数窗误排除）；
+- ColorOS NMS binder：`areNotificationsEnabledForPackageInt`（AOSP 的 Int 变体被提到 binder 层）；
+- ColorOS Oplus 服务端：客户端 `isAppRingtonePermissionGranted` → 服务端 `isAppRingtonePermissionGrantedInner`（Inner 后缀）；
+- ColorOS Oplus 服务端宿主：独立的 `OplusNotificationManagerServiceExtImpl`（不在 NMS 嵌套类——首版按惯例猜挂 NMS 内部导致 0 命中，scanning 日志判例）。
+
+### 5.2 新机型 bring-up 协议（多机型适配工作流）
+
+1. 装模块 → 重启 → LSPosed 日志看各层计数：`Layer AppOps/NMS/PMS/AMS: N hooks`；
+2. 某层 N=0 时，日志里该层会自动输出 `diag:` 行——目标类的真实方法签名（上限 30 行）；
+3. 把 `diag:` 内容回报给维护者 → 按真实符号调整候选表 / 匹配规则 → 下个版本覆盖该 ROM；
+4. 手机管家等顽固应用仍提示：确认其查询走哪层（AppOps 日志可加临时埋点），优先确认 C/D 层计数 > 0。
 
 ---
 
@@ -226,7 +274,7 @@ unzip -p app/build/outputs/apk/release/*.apk META-INF/xposed/module.prop
 
 ## 8. 真机验证序列（人类执行；AI 负责维护此清单）
 
-1. **启用**：LSPosed → 模块 → 启用；作用域确认 `system`（不是 `android`）。
+1. **启用**：LSPosed → 模块 → 启用。scope 静态声明为 system（RL-14）；界面勾选任何条目都会被回滚，属预期。
 2. **开机日志**：LSPosed 日志里出现 `Installed N hooks in system_server`（N > 0；N == 0 说明符号探测全部失败，按 §3 的候选表逐项排查该 ROM）。
 3. **功能正向**：禁用应用 X 的通知 → 打开 X → 无"开启通知"引导；X 的通知确实不送达。
 4. **功能反向（关键）**：设置 → 应用 X → 通知：开关显示为**关**（RL-02 的真实验证）。
@@ -254,6 +302,8 @@ unzip -p app/build/outputs/apk/release/*.apk META-INF/xposed/module.prop
 [ ] 是否引入了 UI / Activity / 配置？ → RL-17（不允许）
 [ ] 热重载三要素是否完整？ → RL-15
 [ ] 是否动了 kotlin 条目？ → composeBom 是否同步升到同期或更新（RL-19）
+[ ] 新增/修改 hook 是否写死了参数位置/类型序列？ → RL-21（禁止，用参数扫描）
+[ ] 某层零命中路径是否仍会输出 diag dump？ → RL-22
 [ ] §7 构建验证协议是否全过？
 [ ] 若行为变化：README/README_ZH 的验证状态表是否需要更新（诚实性）？
 ```
