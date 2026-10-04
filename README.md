@@ -79,12 +79,34 @@ To confirm it's active: the LSPosed log shows `Installed N hooks in system_serve
 
 ## 🚫 Non-Commercial Statement
 
-This project was started by the developer out of personal interest and is **non-commercial** in nature:
+This project was started by the developer out of personal interest and is
+**non-commercial** in nature:
 
 - **Permanently free**: no paid features, memberships, subscriptions, or in-app purchases
 - **No sponsorship channels**: the author has never opened sponsorship channels and accepts no donations of any kind
 - **Research & personal-use oriented**: positioned as a tool for personal device customization and Xposed framework research, not a commercial product
-- **Resale prohibited**: resale or profit-oriented redistribution is strictly prohibited; obtain the module only from this repository (GitHub)
+
+**License is GPL-3.0 only — no commercial exceptions.** This project is
+offered under the terms of the GPL-3.0 (see [LICENSE](LICENSE)), and **every
+use must comply with that license in full**. What GPL requires — source
+availability and the same license for derivatives — is exactly what it means
+to use this project. **Commercial use that cannot accept GPL terms does not
+have the author's authorization**: the author does not offer, and will not
+negotiate, dual licensing, commercial exceptions, or proprietary
+redistribution. Reselling builds for profit while ignoring GPL obligations
+is copyright infringement.
+
+- **Attribution and statement integrity**:
+  Redistribution of unmodified builds is permitted only together with this
+  statement and proper attribution. **Removing, altering, or obscuring this
+  non-commercial statement when redistributing is prohibited.**
+- **Official channels only**:
+  Obtain the module **only** from this repository (GitHub) or its official
+  Releases. Builds from any other source are unofficial, unverified, and used
+  entirely at the downloader's own risk. The developer assumes no
+  responsibility for any issues arising from unofficial sources, and
+  **reserves the right to pursue legal remedies against violations of the
+  above terms**.
 
 ## 💬 Feedback
 
