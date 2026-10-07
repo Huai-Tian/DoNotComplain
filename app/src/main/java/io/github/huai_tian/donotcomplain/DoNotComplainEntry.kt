@@ -1,8 +1,8 @@
-package dont.complain
+package io.github.huai_tian.donotcomplain
 
 import android.util.Log
-import dont.complain.hook.SettingsHooker
-import dont.complain.hook.SystemHooker
+import io.github.huai_tian.donotcomplain.hook.SettingsHooker
+import io.github.huai_tian.donotcomplain.hook.SystemHooker
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam
 import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam

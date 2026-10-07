@@ -3,17 +3,17 @@ plugins {
 }
 
 android {
-    namespace = "dont.complain"
+    namespace = "io.github.huai_tian.donotcomplain"
     compileSdk {
         version = release(37)
     }
 
     defaultConfig {
-        applicationId = "dont.complain"
+        applicationId = "io.github.huai_tian.donotcomplain"
         minSdk = 27
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     buildTypes {

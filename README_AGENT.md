@@ -1,6 +1,6 @@
 # README_AGENT.md — AI 协作者契约文档
 
-> **本文档的读者是大语言模型 / 编码 Agent，不是人类。** 人类请阅读 [README.md](README.md) / [README_ZH.md](README_ZH.md)。
+> **本文档的读者是大语言模型 / 编码 Agent，不是人类。** 人类请阅读 [README.md](README.md)（中英双语）。
 >
 > 你（Agent）即将在一个**运行于 `system_server` 的 LSPosed 模块**项目上工作。这不是普通的应用开发：
 > 本模块的 hook 代码在 Android 最关键的系统进程里执行——**这里崩溃 = 整机重启循环，可能需要刷机救援**。
@@ -164,15 +164,21 @@
 
 ```
 仓库根/
-├── README.md / README_ZH.md        人类文档（英文/中文）
+├── README.md                       人类文档（单文件中英双语——LSPosed 仓库页/手机端只渲染
+│                                   README.md，双语必须内联，勿拆回 README_ZH.md）
 ├── README_AGENT.md                 本文档
 └── app/
-    ├── build.gradle.kts            唯一依赖 compileOnly(libxposed.api)（RL-11/18 的落点）
+    ├── build.gradle.kts            唯一依赖 compileOnly(libxposed.api)（RL-11/18 的落点）；
+    │                               applicationId=io.github.huai_tian.donotcomplain
+    │                               （LSPosed 官方仓库要求包名为合法反向域名——io.github.<用户名>，
+    │                               勿改回 dont.complain：该名隐含不持有的 dont.com 域名，提交会被拒）
     └── src/main/
         ├── AndroidManifest.xml     裸 application（label/description，无任何组件）
-        ├── java/dont/complain/
+        ├── java/io/github/huai_tian/donotcomplain/
         │   ├── DoNotComplainEntry.kt   XposedModule 入口（onSystemServerStarting + 热重载）
-        │   └── hook/SystemHooker.kt    全部 hook 逻辑（本模块的核心）
+        │   └── hook/
+        │       ├── SystemHooker.kt     主体 hook 逻辑 Layer A-E + 服务诊断（本模块的核心）
+        │       └── SettingsHooker.kt   SettingsProvider 观察器 Layer F（观察模式，不改值）
         ├── keepRules/rules.keep    DFS 式 keep + adaptresourcefilecontents（RL-13）
         └── resources/META-INF/xposed/
             ├── java_init.list      入口类全限定名（构建时随混淆名自动改写）
@@ -259,9 +265,11 @@ Layer F 经 `ContentProvider.attachInfo` 截获——scope 无需也无法为它
 unzip -l app/build/outputs/apk/release/*.apk | grep "META-INF/xposed"
 # 期望：java_init.list / module.prop / scope.list 三条
 
-# 3. 入口类未被混淆（RL-13 回归）
+# 3. 入口类与 java_init.list 的配对（RL-13 回归）
 unzip -p app/build/outputs/apk/release/*.apk classes.dex | strings | grep "DoNotComplainEntry"
-# 期望：dont/complain/DoNotComplainEntry 存在
+# 期望：debug 构建存在 io/github/huai_tian/donotcomplain/DoNotComplainEntry；
+#      release 构建中入口按 RL-13 判例被混淆（allowobfuscation）——此时以
+#      java_init.list 内容与 dex 中的实际类名一致为准（adaptresourcefilecontents 配对）
 
 # 4. module.prop 内容
 unzip -p app/build/outputs/apk/release/*.apk META-INF/xposed/module.prop
@@ -305,7 +313,7 @@ unzip -p app/build/outputs/apk/release/*.apk META-INF/xposed/module.prop
 [ ] 新增/修改 hook 是否写死了参数位置/类型序列？ → RL-21（禁止，用参数扫描）
 [ ] 某层零命中路径是否仍会输出 diag dump？ → RL-22
 [ ] §7 构建验证协议是否全过？
-[ ] 若行为变化：README/README_ZH 的验证状态表是否需要更新（诚实性）？
+[ ] 若行为变化：README（双语）的验证状态表是否需要更新（诚实性）？
 ```
 
 ---

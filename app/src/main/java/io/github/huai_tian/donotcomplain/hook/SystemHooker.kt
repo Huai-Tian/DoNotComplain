@@ -1,4 +1,4 @@
-package dont.complain.hook
+package io.github.huai_tian.donotcomplain.hook
 
 import android.annotation.SuppressLint
 import android.app.NotificationChannel
