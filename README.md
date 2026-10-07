@@ -1,69 +1,123 @@
 # DoNotComplain
 
-## 它是做什么的 | What it does
+[简体中文](README_ZH.md) | English | [AI collaboration doc](README_AGENT.md)
 
-**DoNotComplain** 是一个 LSPosed 模块：当你关闭某个应用的通知后，它会阻止该应用察觉——"开启通知"的弹窗、横幅、红点从此消失。它**不会**重新打开通知：通知依然关闭、不会送达，只是应用不再为此骚扰你。
+## What it does
 
-**DoNotComplain** is an LSPosed module: after you disable an app's notifications, the app can no longer tell — "enable notifications" popups, banners and badges vanish. It does **not** re-enable them: notifications stay off and undelivered; the app simply stops pestering you.
+**DoNotComplain** is an LSPosed module. When you turn off an app's notifications, this module stops the app from noticing — so the "turn on notifications, don't miss out" popups, banners, and nag badges disappear.
 
-## 效果 | Effects
+It does **not** re-enable your notifications. They stay off, nothing gets delivered — the app just stops pestering you about it.
 
-- ✅ 应用内"开启通知"引导弹窗、横幅消失
-- ✅ 系统设置里通知开关依然显示为**关**（真实状态不变）
-- ✅ 通知确实不会送达
-- ✅ 覆盖**所有**应用，无需配置；禁用模块并重启即恢复原状
+## Effects
 
 - ✅ In-app "enable notifications" prompts and banners disappear
-- ✅ The system Settings page still shows the toggle as **off** (real state unchanged)
+- ✅ The system Settings page still shows the app's notification toggle as **off** (real state unchanged)
 - ✅ Notifications genuinely remain blocked
-- ✅ Covers **all** apps with zero configuration; disable + reboot restores everything
+- ✅ Covers **all** apps on the device — nothing to configure per app
+- ✅ Disable the module in LSPosed and reboot — everything returns to normal
 
-## 已验证 | Verified
+## Verified
 
-真机实测：OPPO PGX110 / ColorOS 15（Android 15）、OPPO PLR110 / ColorOS 16（Android 16）——多款主流应用的引导全部消失，系统通知开关与投递行为不受影响。理论上支持 Android 8.1+；其他 ROM 未经充分实测，反馈请附 LSPosed 日志。
+Tested on real devices:
 
-Tested on OPPO PGX110 / ColorOS 15 (Android 15) and OPPO PLR110 / ColorOS 16 (Android 16): prompts in multiple mainstream apps vanished; real toggles and delivery were unaffected. Android 8.1+ in theory; other ROMs not extensively tested — attach the LSPosed log when reporting issues.
+- OPPO PGX110 / ColorOS 15 (Android 15)
+- OPPO PLR110 / ColorOS 16 (Android 16)
 
-## 使用方法 | How to use
+"Enable notifications" prompts in multiple mainstream apps all disappeared; the real notification toggles and delivery behavior were unaffected.
 
-前提：已 root 的设备 + [LSPosed](https://github.com/LSPosed/LSPosed)（或兼容 libxposed API 102 的框架）。
+Android 8.1+ should work in theory; ROMs other than ColorOS have not been extensively tested — when reporting issues, please attach the LSPosed log.
 
-1. 安装 APK
-2. **LSPosed → 模块 → DoNotComplain → 启用**（作用域已内置固定，无需勾选应用；界面勾选被自动还原属正常）
-3. 重启手机
-4. 打开一个你关过通知的应用——它不再提示
-
-验证生效：LSPosed 日志出现 `Installed N hooks in system_server`（N > 0）。
+## How to use
 
 Prerequisites: a rooted device with [LSPosed](https://github.com/LSPosed/LSPosed) (or any framework compatible with libxposed API 102).
 
 1. Install the APK
-2. **LSPosed → Modules → DoNotComplain → Enable** (scope is built-in and fixed; UI ticks get auto-reverted, which is expected)
-3. Reboot
-4. Open an app whose notifications you disabled — it no longer complains
+2. Open **LSPosed → Modules → DoNotComplain → Enable**
+   (the scope is built-in and fixed — you don't need to tick any app; ticks made in the LSPosed UI will be automatically reverted, which is expected)
+3. Reboot the device
+4. Open an app whose notifications you have disabled — it no longer complains
 
-To confirm: the LSPosed log shows `Installed N hooks in system_server` (N > 0).
+To confirm it's active: the LSPosed log shows `Installed N hooks in system_server` (N > 0).
 
-## 边界 | Boundaries
+## What it can NOT do (honest boundaries)
 
-管不了：应用自有设置页里的推送开关（去应用内打开即可，非本模块对抗目标）、系统权限申请对话框、服务端下发的运营弹窗。
+- **The app's own in-app push toggle**: some apps have a separate "in-app messaging" switch, and their banner reminds you about *that* switch, not the system permission — just enable it in the app's own settings. That is not this module's adversary
+- **System permission-request dialogs**: the standard Android dialog shown when an app actively requests a permission is system UI and is unaffected
+- **Server-driven promotional popups**: marketing content pushed from the network, unrelated to the local permission state
 
-Not covered: the app's own in-app push toggle (enable it in the app's settings — not this module's adversary), system permission-request dialogs, server-driven promotional popups.
+## Risks
 
-## 风险与免责 | Risks & Disclaimer
+- The module runs inside the system's core process (system_server). **In theory**, a module defect or a conflict with an unusual ROM could cause a boot loop — recoverable by uninstalling the module via recovery. No such issue occurred on verified devices, but be aware of the risk and keep backups
 
-模块运行于系统核心进程 system_server，**理论上**缺陷或与非常规 ROM 的冲突可能导致 boot loop（可经 recovery 卸载恢复），请做好备份。本项目仅供个人设备定制与 Xposed 研究学习；使用本软件欺骗权限检查可能违反第三方应用服务条款，账号封禁等后果自负；软件按 GPL-3.0 提供，不附任何担保，作者不对任何损失承担责任。
+## ⚖️ Disclaimer
 
-This module runs inside `system_server`: **in theory** a defect or unusual-ROM conflict could cause a boot loop (recoverable by uninstalling via recovery) — keep backups. For personal device customization and Xposed research only; spoofing permission checks may violate third-party apps' terms of service — consequences such as account bans are on you. Provided under GPL-3.0 with no warranties; the author is liable for nothing.
+- **Purpose Limitation**:
+  This project is intended for **personal device customization, Xposed development research, and educational purposes** only — helping users silence apps that pressure them into re-enabling notifications the user deliberately turned off.
+  Do not use this project for any illegal purpose.
 
-## 非商业声明 | Non-Commercial
+- **Consequences Warning**:
+  Spoofing permission checks with this software **may violate the terms of service of third-party applications**, and may result in account suspension, device restrictions, or other losses.
+  You should assess the risks before using it. The developer and contributors **are not responsible for any account bans, legal liabilities, or other consequences** arising from such use.
 
-本项目永久免费、无赞助渠道、不接受捐赠。许可仅为 GPL-3.0，**不设商业例外**，不接受双许可洽谈；再分发须完整遵守 GPL 并保留本声明与署名；请仅从本仓库或官方 Releases 获取，非官方来源风险自负。
+- **System Stability**:
+  This module runs inside `system_server`. A defect in it (or in its interaction with an OEM ROM) **may cause boot loops requiring recovery intervention**. Keep backups; test new ROM combinations cautiously.
 
-Permanently free, no sponsorship, no donations. GPL-3.0 only — **no commercial exceptions**, no dual licensing. Redistribution must comply with GPL in full and keep this statement intact; obtain builds only from this repo or its official Releases.
+- **No Warranty**:
+  This software is provided under the terms of its license (GPL-3.0), **without any express or implied warranties**, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement.
 
-## 反馈与支持 | Feedback & Support
+- **Compatibility Disclaimer**:
+  This software **does not guarantee full compatibility with all Android versions, OEM ROMs, or Xposed framework implementations**. The developer assumes no responsibility for functional issues or losses caused by system updates, framework changes, or other uncontrollable factors.
 
-问题与建议欢迎通过 GitHub Issues 提交，ROM 兼容性问题请附 LSPosed 日志。二次开发（尤其借助 AI）请先读 [README_AGENT.md](README_AGENT.md)。觉得有用就点个 ⭐。
+- **Limitation of Liability**:
+  To the fullest extent permitted by applicable law, **in no event shall the author or contributors be liable** for any direct, indirect, incidental, special, or consequential damages arising out of or in connection with the use or inability to use this software, even if advised of the possibility of such damages.
 
-Issues and suggestions via GitHub Issues; attach the LSPosed log for ROM compatibility reports. Contributors (especially AI-assisted) should read [README_AGENT.md](README_AGENT.md) first. If it helps, give it a ⭐.
+- **User Responsibility**:
+  Users assume all legal responsibilities arising from the use of this project.
+
+- **Final Interpretation**:
+  The final interpretation of this disclaimer belongs to the author of this project.
+
+## 🚫 Non-Commercial Statement
+
+This project was started by the developer out of personal interest and is
+**non-commercial** in nature:
+
+- **Permanently free**: no paid features, memberships, subscriptions, or in-app purchases
+- **No sponsorship channels**: the author has never opened sponsorship channels and accepts no donations of any kind
+- **Research & personal-use oriented**: positioned as a tool for personal device customization and Xposed framework research, not a commercial product
+
+**License is GPL-3.0 only — no commercial exceptions.** This project is
+offered under the terms of the GPL-3.0 (see [LICENSE](LICENSE)), and **every
+use must comply with that license in full**. What GPL requires — source
+availability and the same license for derivatives — is exactly what it means
+to use this project. **Commercial use that cannot accept GPL terms does not
+have the author's authorization**: the author does not offer, and will not
+negotiate, dual licensing, commercial exceptions, or proprietary
+redistribution. Reselling builds for profit while ignoring GPL obligations
+is copyright infringement.
+
+- **Attribution and statement integrity**:
+  Redistribution of unmodified builds is permitted only together with this
+  statement and proper attribution. **Removing, altering, or obscuring this
+  non-commercial statement when redistributing is prohibited.**
+- **Official channels only**:
+  Obtain the module **only** from this repository (GitHub) or its official
+  Releases. Builds from any other source are unofficial, unverified, and used
+  entirely at the downloader's own risk. The developer assumes no
+  responsibility for any issues arising from unofficial sources, and
+  **reserves the right to pursue legal remedies against violations of the
+  above terms**.
+
+## 💬 Feedback
+
+Issues, suggestions, and bug reports are welcome via GitHub Issues. When reporting ROM compatibility problems, please attach the LSPosed log.
+
+If you are contributing to this project (especially with AI assistance), read [README_AGENT.md](README_AGENT.md) first — it contains the project's safety red lines and constraints.
+
+## ⭐ Support the Project
+
+If this module saved you from one more "please enable notifications" banner, consider giving it a ⭐ on GitHub.
+
+Your support helps more people discover the project, and tells the author the maintenance is worth it.
+
+Thank you.
